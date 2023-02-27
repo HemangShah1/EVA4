@@ -11,9 +11,11 @@ import torchvision.transforms as transforms
 
 import os
 import argparse
+from tqdm import tqdm
 
 from models import *
 import datasets
+from utils import train, test, util
 
 
 
@@ -28,100 +30,56 @@ def create_transforms():
     test_transforms = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-    ])
+    ])+
 
     return train_transforms, test_transforms
 
-def train(net, criterion, trainloader, optimizer, device, epoch):
-    print('\nEpoch: %d' % epoch)
-    net.train()
-    train_loss = 0
-    correct = 0
-    total = 0
-    for batch_idx, (inputs, targets) in enumerate(trainloader):
-        inputs, targets = inputs.to(device), targets.to(device)
-        optimizer.zero_grad()
-        outputs = net(inputs)
-        loss = criterion(outputs, targets)
-        loss.backward()
-        optimizer.step()
 
-        train_loss += loss.item()
-        _, predicted = outputs.max(1)
-        total += targets.size(0)
-        correct += predicted.eq(targets).sum().item()
-
-        print(f'{batch_idx} {len(trainloader)} - Loss: {train_loss/(batch_idx+1):.3f} | Acc: {100.*correct/total:.3f} ({correct} / {total})')
-
-
-def test(net, criterion, testloader, device, epoch):
-    global best_acc
-    net.eval()
-    test_loss = 0
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for batch_idx, (inputs, targets) in enumerate(testloader):
-            inputs, targets = inputs.to(device), targets.to(device)
-            outputs = net(inputs)
-            loss = criterion(outputs, targets)
-
-            test_loss += loss.item()
-            _, predicted = outputs.max(1)
-            total += targets.size(0)
-            correct += predicted.eq(targets).sum().item()
-
-            print(f'{batch_idx} {len(testloader)} - Loss: {test_loss/(batch_idx+1):.3f} | Acc: {100.*correct/total:.3f} ({correct} / {total})')
-            # progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-            #              % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
-
-    # Save checkpoint.
-    # acc = 100.*correct/total
-    # if acc > best_acc:
-    #     print('Saving..')
-    #     state = {
-    #         'net': net.state_dict(),
-    #         'acc': acc,
-    #         'epoch': epoch,
-    #     }
-    #     if not os.path.isdir('checkpoint'):
-    #         os.mkdir('checkpoint')
-    #     torch.save(state, './checkpoint/ckpt.pth')
-    #     best_acc = acc
-
-
-def run(lr, trainloader, testloader):
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f'device: {device}')
-
-    net = ResNet18()
-    net = net.to(device)
+def run(device, model, lr, trainloader, testloader, num_epochs):
+    model = model.to(device)
     if device == 'cuda':
-        net = torch.nn.parallel.DataParallel(net)
+        model = torch.nn.parallel.DataParallel(model)
         cudnn.benchmark = True
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(net.parameters(), lr=lr,
+    optimizer = optim.SGD(model.parameters(), lr=lr,
                         momentum=0.9, weight_decay=5e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
 
     start_epoch = 0
-    for epoch in range(start_epoch, start_epoch+200):
-        train(net, criterion, trainloader, optimizer, device, epoch)
-        test(net, criterion, testloader, device, epoch)
+    best_acc = 0
+    train_losses, train_accuracies = [], []
+    test_losses, test_accuracies = [], []
+    for epoch in range(start_epoch, start_epoch + num_epochs):
+        losses, accuracies = train.train(model, criterion, trainloader, optimizer, device, epoch)
+        train_losses.extend(losses)
+        train_accuracies.extend(accuracies)
+
+        losses, accuracies, best_acc = test.test(model, criterion, testloader, device, best_acc, epoch)
+        test_losses.extend(losses)
+        test_accuracies.extend(accuracies)
+
         scheduler.step()
+
+    util.plot_metrics(train_accuracies, train_losses, test_accuracies, test_losses)
+    
 
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
-    parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
-    parser.add_argument('--resume', '-r', action='store_true',
-                        help='resume from checkpoint')
-    args = parser.parse_args()
 
 
     train_transforms, test_transforms = create_transforms()
-    trainloader, testloader, _, _, _ = datasets.get_CIFAR10_datasets(train_transforms, test_transforms)
+    trainloader, testloader, classes, trainset, testset, stats = datasets.get_CIFAR10_datasets(train_transforms, test_transforms)
 
-    run(args.lr, trainloader, testloader)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f'device: {device}')
+
+    model = ResNet18()
+    num_epochs = 1
+    lr = 0.01
+
+    run(device, model, lr, trainloader, testloader, num_epochs)
+
+    wrong_predictions = util.get_wrong_predictions(model, testloader, device)
+    util.plot_misclassified(wrong_predictions, stats['mean'], stats['std'], 10, classes)

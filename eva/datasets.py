@@ -14,5 +14,9 @@ def get_CIFAR10_datasets(train_transforms, test_transforms):
 
     classes = ('plane', 'car', 'bird', 'cat', 'deer',
            'dog', 'frog', 'horse', 'ship', 'truck')
+    
+    mean = trainset.data.mean(axis=(0,1,2))/255
+    std = trainset.data.std(axis=(0,1,2))/255
+    stats = {'mean': mean, 'std': std}
 
-    return trainloader, testloader, classes, trainset, testset
+    return trainloader, testloader, classes, trainset, testset, stats
